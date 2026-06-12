@@ -1,0 +1,13 @@
+# ── Binarios compilados ────────────────────────────────────────────
+montecarlo_seq
+montecarlo_omp
+
+# ── CSVs generados (opcionales, pueden ser grandes) ───────────────
+*.csv
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+
