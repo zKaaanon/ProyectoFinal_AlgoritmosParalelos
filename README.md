@@ -5,7 +5,7 @@ Entrega: Viernes 12 de junio de 2026
 ### Integrantes
 
 - Reyna Mendez Cristian Ignacio - 320149579
-- [Nombre integrante 2]
+- López Montúfar José Eleazar - 320207219
 - [Nombre integrante 3]
 
 ---
