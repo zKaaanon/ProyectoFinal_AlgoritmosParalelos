@@ -13,9 +13,7 @@
 #    ./benchmark.sh
 #
 #  Salida:
-#    benchmarks.csv  — listo para importar a Supabase / Power BI
-#
-#  Proyecto: Monte Carlo con OpenMP — Fase 3 (Benchmarking)
+#    benchmarks.csv  
 #  Materia:  Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
 
 set -euo pipefail   # Salir si cualquier comando falla
