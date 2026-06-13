@@ -6,7 +6,7 @@ Entrega: Viernes 12 de junio de 2026
 
 - Reyna Mendez Cristian Ignacio - 320149579
 - López Montúfar José Eleazar - 320207219
-- [Nombre integrante 3]
+- Dorantes Perez Brando - 31425356
 
 ---
 
