@@ -1,52 +1,19 @@
+```c
 /*
  * montecarlo_omp.c
- * Versión PARALELA con OpenMP — Monte Carlo para valoración de opción call europea.
- *
- * ── Modelo financiero ──────────────────────────────────────────────────────
- * Idéntico a montecarlo_seq.c: GBM bajo medida de riesgo neutral.
- *
- *   S(t + Δt) = S(t) · exp( (r − σ²/2)·Δt + σ·ε·√Δt )
- *
- * Precio de la opción call europea:
- *   C = e^(−rT) · E[ max(S_T − K, 0) ]
- *
- * ── Estrategia de paralelización ──────────────────────────────────────────
- * Cada trayectoria i es COMPLETAMENTE INDEPENDIENTE del resto.
- * No hay dependencias de datos entre iteraciones → paralelismo perfecto.
- *
- * Problema del RNG en paralelo:
- *   Si todos los hilos compartieran la misma seed, habría race condition
- *   (condición de carrera): dos hilos leen/modifican *seed al mismo tiempo
- *   → resultados incorrectos o no reproducibles.
- *
- *   Solución: cada hilo tiene su PROPIO estado RNG, derivado de la seed
- *   base más su ID de hilo. Así cada hilo genera una secuencia aleatoria
- *   independiente, sin sincronización.
- *
- * Directivas OpenMP usadas:
- *   #pragma omp parallel for          — divide el for entre hilos
- *   reduction(+:suma_payoffs)          — acumula suma de forma segura
- *   schedule(static)                   — reparte bloques iguales (carga uniforme)
- *   private(local_seed, ST, payoff)    — variables locales por hilo
- *   firstprivate(seed_base)            — cada hilo recibe copia del valor inicial
- *
- * ── Complejidad ────────────────────────────────────────────────────────────
- *   Temporal: O(N·PASOS / p)   p = número de hilos
- *   Espacial: O(N)             arreglo de precios para VaR (compartido)
- *
- * ── Compilación ───────────────────────────────────────────────────────────
- *   gcc -O2 -std=c11 -Wall -Wextra -fopenmp -o montecarlo_omp montecarlo_omp.c -lm
- *
- * ── Uso ───────────────────────────────────────────────────────────────────
- *   ./montecarlo_omp [N] [hilos] [seed]
- *   N      = número de simulaciones  (default: 1 000 000)
- *   hilos  = número de hilos OpenMP  (default: todos los núcleos disponibles)
- *   seed   = semilla base del RNG    (default: 12345)
- *
- * ── Proyecto ──────────────────────────────────────────────────────────────
- *   Monte Carlo con OpenMP — Fase 2 (Paralela)
- *   Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
- *   Entrega: Viernes 12 de junio de 2026
+ * PROYECTO: Monte Carlo con OpenMP — Fase 2 (Paralela)
+ * MATERIA: Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
+ * ENTREGA: Viernes 12 de junio de 2026
+ * * NOTAS DE ESTUDIO / EXPLICACIÓN DE MI CÓDIGO:
+ * - El modelo matemático es el mismo que en el secuencial (GBM).
+ * - Como cada simulación es independiente, se puede paralelizar en corto (paralelismo ideal).
+ * - OJO CON EL RNG: Si los hilos comparten la semilla, van a chocar (race condition)
+ * y los resultados van a salir idénticos o corruptos. Solución: Cada hilo calcula
+ * su propia "local_seed" usando su ID de hilo al entrar a la zona paralela.
+ * * Compilación rápida en la terminal:
+ * gcc -O2 -std=c11 -Wall -Wextra -fopenmp -o montecarlo_omp montecarlo_omp.c -lm
+ * * Ejecución:
+ * ./montecarlo_omp [N_simulaciones] [num_hilos] [semilla]
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -59,14 +26,11 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
-#include <omp.h>        /* ← OpenMP: omp_get_wtime, omp_set_num_threads, etc. */
+#include <omp.h>        /* Librería de OpenMP para hilos y tiempos */
 
 #include "blackscholes.h"
 
-/* ══════════════════════════════════════════════════════════════════
- *  PARÁMETROS FINANCIEROS — idénticos a montecarlo_seq.c
- *  (mismos valores garantizan comparación justa seq vs paralelo)
- * ══════════════════════════════════════════════════════════════════ */
+/* --- Constantes financieras del problema --- */
 #define S0      100.0
 #define K       105.0
 #define T_ANN     1.0
@@ -74,17 +38,12 @@
 #define SIGMA     0.20
 #define PASOS     252
 
-/* ══════════════════════════════════════════════════════════════════
- *  PARÁMETROS DE SIMULACIÓN POR DEFECTO
- * ══════════════════════════════════════════════════════════════════ */
+/* --- Valores por defecto por si no pasan argumentos --- */
 #define N_DEFAULT    1000000L
 #define SEED_DEFAULT 12345u
 
 
-/* ──────────────────────────────────────────────────────────────────
- * xorshift32 — idéntico a la versión secuencial.
- * Copiado aquí para que el archivo sea autónomo.
- * ────────────────────────────────────────────────────────────────── */
+/* Generador xorshift32: Rápido y no pesa nada. Igual al secuencial. */
 static uint32_t xorshift32(uint32_t *state) {
     uint32_t x = *state;
     x ^= x << 13;
@@ -95,9 +54,7 @@ static uint32_t xorshift32(uint32_t *state) {
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * box_muller — idéntico a la versión secuencial.
- * ────────────────────────────────────────────────────────────────── */
+/* Box-Muller para transformar los números aleatorios a una distribución normal */
 static void box_muller(uint32_t *seed, double *z1, double *z2) {
     double u1 = (xorshift32(seed) + 0.5) / 4294967296.0;
     double u2 = (xorshift32(seed) + 0.5) / 4294967296.0;
@@ -107,15 +64,10 @@ static void box_muller(uint32_t *seed, double *z1, double *z2) {
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * simular_precio_final — idéntico a la versión secuencial.
- *
- * Esta función es llamada desde dentro de la región paralela.
- * Es thread-safe porque:
- *   1. No usa variables globales ni estáticas.
- *   2. El puntero 'seed' apunta al estado LOCAL del hilo (privado).
- *   3. Todas las variables internas son automáticas (pila del hilo).
- * ────────────────────────────────────────────────────────────────── */
+/* * Simula la trayectoria del precio hasta el final.
+ * Es thread-safe (segura para hilos) porque no toca variables globales 
+ * y la seed que recibe es la copia privada de cada hilo.
+ */
 static double simular_precio_final(double s0,   double r,
                                     double sigma, double dt,
                                     int pasos,   uint32_t *seed) {
@@ -126,12 +78,14 @@ static double simular_precio_final(double s0,   double r,
     double z1, z2;
     int i = 0;
 
+    /* Avanzamos de dos en dos pasos por Box-Muller */
     while (i < pasos - 1) {
         box_muller(seed, &z1, &z2);
         S *= exp(drift + vol_sqrt * z1);
         S *= exp(drift + vol_sqrt * z2);
         i += 2;
     }
+    /* Si el número de pasos es impar, hacemos el último que falta */
     if (i < pasos) {
         box_muller(seed, &z1, &z2);
         S *= exp(drift + vol_sqrt * z1);
@@ -141,10 +95,7 @@ static double simular_precio_final(double s0,   double r,
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * cmp_double / calcular_var — idénticos a la versión secuencial.
- * (Se ejecutan FUERA de la región paralela, en el hilo principal.)
- * ────────────────────────────────────────────────────────────────── */
+/* Funciones auxiliares para ordenar con qsort y sacar el VaR */
 static int cmp_double(const void *a, const void *b) {
     double da = *(const double *)a;
     double db = *(const double *)b;
@@ -160,14 +111,11 @@ static double calcular_var(double *precios, long n, double nivel) {
 }
 
 
-/* ══════════════════════════════════════════════════════════════════
- *  PROGRAMA PRINCIPAL
- * ══════════════════════════════════════════════════════════════════ */
 int main(int argc, char *argv[]) {
 
-    /* ── Parámetros de línea de comandos ── */
+    /* Cachar parámetros desde la consola, si no, se quedan los de fábrica */
     long     N         = N_DEFAULT;
-    int      num_hilos = 0;          /* 0 = dejar que OpenMP elija */
+    int      num_hilos = 0;          /* 0 significa que OpenMP decida según la compu */
     uint32_t seed_base = SEED_DEFAULT;
 
     if (argc >= 2) N         = atol(argv[1]);
@@ -179,11 +127,11 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    /* ── Configurar número de hilos ── */
+    /* Forzar los hilos en OpenMP si el usuario metió el dato */
     if (num_hilos > 0)
         omp_set_num_threads(num_hilos);
 
-    /* Obtener cuántos hilos se usarán realmente */
+    /* Preguntar a OpenMP cuántos hilos terminó levantando realmente */
     int hilos_reales = 0;
     #pragma omp parallel
     {
@@ -195,16 +143,16 @@ int main(int argc, char *argv[]) {
     printf("   Monte Carlo Financiero — Versión PARALELA (OpenMP)\n");
     printf("═══════════════════════════════════════════════════════\n");
     printf("  Parámetros financieros:\n");
-    printf("    S0=%.1f  K=%.1f  T=%.1f año(s)  r=%.2f  σ=%.2f\n",
+    printf("     S0=%.1f  K=%.1f  T=%.1f año(s)  r=%.2f  σ=%.2f\n",
            S0, K, T_ANN, R, SIGMA);
-    printf("    Pasos por trayectoria: %d (días hábiles)\n", PASOS);
+    printf("     Pasos por trayectoria: %d (días hábiles)\n", PASOS);
     printf("  Parámetros de simulación:\n");
-    printf("    N         = %ld trayectorias\n", N);
-    printf("    Hilos OMP = %d\n", hilos_reales);
-    printf("    Seed base = %u\n", seed_base);
+    printf("     N         = %ld trayectorias\n", N);
+    printf("     Hilos OMP = %d\n", hilos_reales);
+    printf("     Seed base = %u\n", seed_base);
     printf("───────────────────────────────────────────────────────\n");
 
-    /* ── Reservar memoria para precios finales (VaR) ── */
+    /* Guardar memoria para el arreglo de precios */
     double *precios = (double *)malloc((size_t)N * sizeof(double));
     if (!precios) {
         fprintf(stderr, "Error: malloc falló para %ld doubles (%.1f MB).\n",
@@ -214,79 +162,47 @@ int main(int argc, char *argv[]) {
 
     double dt = T_ANN / (double)PASOS;
 
-    /* ── Inicio de medición con omp_get_wtime() ─────────────────────
-     * omp_get_wtime() mide tiempo de pared (wall-clock), no CPU.
-     * Es la medición correcta para benchmarking paralelo porque
-     * clock() mediría la suma de tiempo de TODOS los hilos.
-     * ──────────────────────────────────────────────────────────────── */
+    /* * Cronómetro: Se usa omp_get_wtime() porque mide tiempo real (wall-clock).
+     * La función clock() clásica de C sumaría el tiempo de todos los hilos 
+     * y daría una medición falsa/gigante en paralelo.
+     */
     double t_inicio = omp_get_wtime();
 
-    /* ════════════════════════════════════════════════════════════════
-     *  LOOP PRINCIPAL PARALELO — O(N·PASOS / p)
-     *
-     *  #pragma omp parallel for:
-     *    Crea un equipo de hilos y divide el rango [0, N) entre ellos.
-     *    OpenMP reparte automáticamente las iteraciones.
-     *
-     *  reduction(+:suma_payoffs):
-     *    Cada hilo acumula su suma PARCIAL en una variable privada.
-     *    Al finalizar, OpenMP suma todas las parciales de forma segura.
-     *    SIN reduction, habría race condition en suma_payoffs += ...
-     *
-     *  schedule(static):
-     *    Divide las N iteraciones en bloques iguales (N/p por hilo).
-     *    Adecuado porque todas las iteraciones tienen el mismo costo.
-     *
-     *  private(local_seed, ST, payoff, z1, z2):
-     *    Cada hilo tiene su PROPIA copia de estas variables.
-     *    local_seed es el estado RNG exclusivo del hilo → thread-safe.
-     *
-     *  firstprivate(seed_base):
-     *    Cada hilo recibe una COPIA del valor de seed_base.
-     *    Luego deriva su propia seed: seed_base + thread_id + 1.
-     *    +1 garantiza que ningún hilo tenga seed = 0 (inválido en xorshift).
-     * ════════════════════════════════════════════════════════════════ */
     double suma_payoffs = 0.0;
 
-    /* ── Región paralela explícita ────────────────────────────────────
-     * Se separa #pragma omp parallel del #pragma omp for para poder
-     * calcular local_seed UNA SOLA VEZ por hilo (al entrar a la región),
-     * y no en cada iteración del loop.
-     *
-     * Si usáramos solo "#pragma omp parallel for" con local_seed dentro
-     * del for, la seed se recalcularía en cada iteración → todos los
-     * llamados a simular_precio_final partirían del mismo estado RNG
-     * → precios incorrectos (bug de reinicio de seed).
-     * ──────────────────────────────────────────────────────────────── */
+    /* * ¡AQUÍ EMPIEZA LA PARALELIZACIÓN CHIDA!
+     * Separamos el 'parallel' del 'for' para inicializar la semilla local 
+     * UNA SOLA VEZ por hilo en lugar de recalcularla en cada iteración del bucle.
+     * * reduction(+:suma_payoffs): Hace que cada hilo sume por su cuenta y al final 
+     * OpenMP junta todo de forma segura para evitar problemas de colisión de datos.
+     */
     #pragma omp parallel reduction(+:suma_payoffs) shared(precios, N, dt)
     {
-        /* ── Seed privada: se calcula UNA VEZ al entrar el hilo ───────
-         * omp_get_thread_num() devuelve 0, 1, … (p-1).
-         * Multiplicar por el número de Fibonacci-hash (2654435761)
-         * distribuye las seeds en el espacio de 32 bits, minimizando
-         * correlaciones entre secuencias de hilos distintos.
-         * +1 garantiza seed != 0 (xorshift32 con estado 0 es invalido).
-         * ─────────────────────────────────────────────────────────── */
+        /* * Hack de la semilla única por hilo: 
+         * Multiplicar por 2654435761u (hash de Fibonacci) distribuye bien las semillas 
+         * para que las secuencias aleatorias de cada hilo no se parezcan entre sí.
+         * Se le suma 1u porque xorshift32 se rompe por completo si la semilla es 0.
+         */
         uint32_t local_seed = seed_base
                               + (uint32_t)omp_get_thread_num() * 2654435761u
                               + 1u;
 
-        /* ── Loop paralelo: cada hilo procesa su porción de [0, N) ── */
+        /* Repartimos el trabajo del for equitativamente entre los hilos (schedule static) */
         #pragma omp for schedule(static)
         for (long i = 0; i < N; i++) {
             double ST     = simular_precio_final(S0, R, SIGMA, dt, PASOS, &local_seed);
             double payoff = ST - K;
-            if (payoff < 0.0) payoff = 0.0;
+            if (payoff < 0.0) payoff = 0.0; /* Opción Call europea: si no conviene, no se ejerce */
 
             precios[i]   = ST;
             suma_payoffs += payoff;
         }
-    } /* fin region paralela */
+    } /* Fin de la zona de hilos */
 
     double t_fin   = omp_get_wtime();
     double tiempo_s = t_fin - t_inicio;
 
-    /* ── Resultados (hilo principal, fuera de región paralela) ── */
+    /* --- Post-procesamiento y cálculos finales (en el hilo principal) --- */
     double precio_mc = exp(-R * T_ANN) * (suma_payoffs / (double)N);
     double precio_bs = bs_call_price(S0, K, T_ANN, R, SIGMA);
     double error_rel = fabs(precio_mc - precio_bs) / precio_bs * 100.0;
@@ -296,16 +212,17 @@ int main(int argc, char *argv[]) {
     for (long i = 0; i < N; i++) suma_st += precios[i];
     double ret_esp = (suma_st / N - S0) / S0 * 100.0;
 
+    /* Imprimir las estadísticas */
     printf("\n  RESULTADOS:\n");
-    printf("    Precio call Monte Carlo  : $%8.4f\n", precio_mc);
-    printf("    Precio call Black-Scholes: $%8.4f\n", precio_bs);
-    printf("    Error relativo           : %8.4f%%\n", error_rel);
-    printf("    VaR 5%% (pérdida máx.)   : $%8.4f\n", var_5);
-    printf("    Retorno esperado promedio: %8.4f%%\n", ret_esp);
+    printf("     Precio call Monte Carlo  : $%8.4f\n", precio_mc);
+    printf("     Precio call Black-Scholes: $%8.4f\n", precio_bs);
+    printf("     Error relativo           : %8.4f%%\n", error_rel);
+    printf("     VaR 5%% (pérdida máx.)   : $%8.4f\n", var_5);
+    printf("     Retorno esperado promedio: %8.4f%%\n", ret_esp);
     printf("\n  DESEMPEÑO:\n");
-    printf("    Tiempo de ejecución : %.6f s\n", tiempo_s);
-    printf("    Hilos utilizados    : %d\n", hilos_reales);
-    printf("    Trayectorias/segundo: %.0f\n", (double)N / tiempo_s);
+    printf("     Tiempo de ejecución : %.6f s\n", tiempo_s);
+    printf("     Hilos utilizados    : %d\n", hilos_reales);
+    printf("     Trayectorias/segundo: %.0f\n", (double)N / tiempo_s);
     printf("───────────────────────────────────────────────────────\n");
 
     if (error_rel < 1.0)
@@ -314,7 +231,7 @@ int main(int argc, char *argv[]) {
         printf("  [WARN] Error relativo alto (%.2f%%) — considerar N mayor\n",
                error_rel);
 
-    /* ── Exportar CSV para Supabase (Fase 4) ── */
+    /* Exportar resultados a CSV para meterlos a Supabase en la Fase 4 */
     FILE *csv = fopen("resultados_omp.csv", "w");
     if (csv) {
         fprintf(csv,
@@ -333,6 +250,8 @@ int main(int argc, char *argv[]) {
 
     printf("═══════════════════════════════════════════════════════\n");
 
-    free(precios);
+    free(precios); /* Limpiar la memoria */
     return EXIT_SUCCESS;
 }
+
+```
