@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
+
 #  benchmark.sh — Benchmarking sistemático: Monte Carlo secuencial vs OpenMP
 #
 #  Qué hace:
@@ -17,25 +17,23 @@
 #
 #  Proyecto: Monte Carlo con OpenMP — Fase 3 (Benchmarking)
 #  Materia:  Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
-#  Entrega:  Viernes 12 de junio de 2026
-# =============================================================================
 
 set -euo pipefail   # Salir si cualquier comando falla
 
-# ── Configuración ─────────────────────────────────────────────────
-REPS=5                          # Repeticiones por configuración
-TAMANIOS=(100000 1000000 10000000)   # N: 100K, 1M, 10M trayectorias
+# Configuración del experimento 
+REPS=5  # Cuantas veces repetimos cada prueba
+TAMANIOS=(100000 1000000 10000000)   #  Tamaños de entrada N: 100K, 1M, 10M trayectorias
 HILOS=(1 2 4 8)                 # Números de hilos a probar
 SEQ_BIN="./montecarlo_seq"
 OMP_BIN="./montecarlo_omp"
 CSV_OUT="benchmarks.csv"
 SEED=12345
 
-# ── Colores para consola ───────────────────────────────────────────
+# Colores para que la salida en consola sea legible
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-# ── Funciones auxiliares ───────────────────────────────────────────
+# Funciones auxiliares 
 
 # Extrae el tiempo de ejecución del output del programa
 # El programa imprime: "    Tiempo de ejecución : X.XXXXXX s"
@@ -53,7 +51,7 @@ promedio() {
     echo "scale=6; $suma / ${#vals[@]}" | bc -l
 }
 
-# Calcula desviación estándar poblacional
+# Calcula desviación estándar poblacional para ver que tan estables son los tiempos
 desv_std() {
     local vals=("$@")
     local media
@@ -67,7 +65,7 @@ desv_std() {
     echo "scale=6; sqrt($suma_sq / ${#vals[@]})" | bc -l
 }
 
-# ── Verificar dependencias ─────────────────────────────────────────
+# Verificar dependencias 
 echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}   Benchmark: Monte Carlo secuencial vs OpenMP${NC}"
 echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"
@@ -79,7 +77,7 @@ for cmd in bc gcc awk; do
     fi
 done
 
-# ── Compilar ───────────────────────────────────────────────────────
+# Compilar
 echo -e "\n${CYAN}[1/4] Compilando...${NC}"
 make all 2>&1 | sed 's/^/  /'
 echo -e "${GREEN}  Compilación exitosa${NC}"
@@ -90,7 +88,7 @@ if [[ ! -x "$SEQ_BIN" || ! -x "$OMP_BIN" ]]; then
     exit 1
 fi
 
-# ── Detectar núcleos disponibles ──────────────────────────────────
+# Detectar núcleos disponibles
 NCORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "?")
 echo -e "\n${CYAN}[2/4] Sistema detectado: ${NCORES} núcleos lógicos${NC}"
 echo -e "  Tamaños N : ${TAMANIOS[*]}"
@@ -99,7 +97,7 @@ echo -e "  Repeticiones por config: ${REPS}"
 TOTAL_RUNS=$(( (${#TAMANIOS[@]} + ${#TAMANIOS[@]} * ${#HILOS[@]}) * REPS ))
 echo -e "  Total de ejecuciones: ${TOTAL_RUNS}"
 
-# ── Crear CSV con cabecera ─────────────────────────────────────────
+# Crear CSV con su encabezado
 echo -e "\n${CYAN}[3/4] Ejecutando experimentos...${NC}"
 echo "version,N,hilos,rep,tiempo_s" > "$CSV_OUT"
 
@@ -108,9 +106,9 @@ declare -A T_SEQ_BASE   # T_SEQ_BASE[N] = tiempo promedio secuencial
 
 RUN=0
 
-# ──────────────────────────────────────────────────────────────────
+
 #  BLOQUE 1: Versión SECUENCIAL (hilos = 1, sin OpenMP)
-# ──────────────────────────────────────────────────────────────────
+
 echo -e "\n  ${BOLD}── Secuencial ──${NC}"
 
 for N in "${TAMANIOS[@]}"; do
@@ -132,9 +130,9 @@ for N in "${TAMANIOS[@]}"; do
     printf "${GREEN}avg=%.3fs  std=%.3fs${NC}\n" "$prom" "$std"
 done
 
-# ──────────────────────────────────────────────────────────────────
+
 #  BLOQUE 2: Versión PARALELA (distintos hilos)
-# ──────────────────────────────────────────────────────────────────
+
 echo -e "\n  ${BOLD}── Paralelo (OpenMP) ──${NC}"
 
 for N in "${TAMANIOS[@]}"; do
@@ -163,17 +161,17 @@ for N in "${TAMANIOS[@]}"; do
     done
 done
 
-# ──────────────────────────────────────────────────────────────────
+
 #  BLOQUE 3: Generar CSV de resumen con métricas calculadas
-# ──────────────────────────────────────────────────────────────────
+
 SUMMARY_CSV="benchmarks_resumen.csv"
 echo "version,N,hilos,tiempo_avg_s,tiempo_std_s,speedup,eficiencia" > "$SUMMARY_CSV"
 
 echo -e "\n${CYAN}[4/4] Calculando métricas de resumen...${NC}"
 
-# Procesar secuencial
+# Procesar los datos de la version secuencial
 for N in "${TAMANIOS[@]}"; do
-    # Filtrar filas de este N y version secuencial, calcular stats
+    # Filtrar filas del csv crudo que corresponden a este N y version secuencial
     tiempos=()
     while IFS=',' read -r ver n p rep t; do
         [[ "$ver" == "secuencial" && "$n" == "$N" ]] && tiempos+=("$t")
@@ -184,7 +182,7 @@ for N in "${TAMANIOS[@]}"; do
     echo "secuencial,$N,1,${prom},${std},1.0000,1.0000" >> "$SUMMARY_CSV"
 done
 
-# Procesar paralelo
+# Procesar los datos en paralelo y calcular speedup y eficiencia
 for N in "${TAMANIOS[@]}"; do
     t_seq="${T_SEQ_BASE[$N]}"
     for P in "${HILOS[@]}"; do
@@ -201,7 +199,7 @@ for N in "${TAMANIOS[@]}"; do
     done
 done
 
-# ── Imprimir tabla de resumen ──────────────────────────────────────
+# Imprimir tabla de resumen
 echo -e "\n${BOLD}══════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}   RESUMEN DE RESULTADOS${NC}"
 echo -e "${BOLD}══════════════════════════════════════════════════════${NC}"

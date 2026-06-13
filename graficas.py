@@ -1,5 +1,6 @@
 """
-graficas.py — Visualización de resultados Monte Carlo con OpenMP
+graficas.py — Visualización de resultados Monte Carlo con OpenMP, lee los CSVs que produce benchmark.sh y los resultados de ambas versiones del programa y guarda las imagenes en la misma carpeta.
+
 Proyecto: Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
 Genera 5 gráficas listas para el informe PDF.
 
@@ -15,10 +16,10 @@ import matplotlib.ticker as ticker
 from matplotlib.gridspec import GridSpec
 from pathlib import Path
 
-# Carpeta base = donde vive este script
+# Usamos la carpeta del script como base para leer los CSVs y guardar las imágenes
 BASE = Path(__file__).parent
 
-# ── Estilo general ────────────────────────────────────────────────
+# Estilo general para todas las gráficas
 plt.rcParams.update({
     "font.family":       "DejaVu Sans",
     "font.size":         11,
@@ -44,16 +45,17 @@ PALETTE = {
 N_LABELS  = {100_000: "100 K", 1_000_000: "1 M", 10_000_000: "10 M"}
 N_MARKERS = {100_000: "o",     1_000_000: "s",   10_000_000: "^"}
 
-# ── Leer datos ────────────────────────────────────────────────────
+# Cargamos los datos para ser leídos 
 df      = pd.read_csv(BASE / "benchmarks_resumen.csv")
 par     = df[df["version"] == "paralelo"].copy()
 seq     = df[df["version"] == "secuencial"].copy()
 res_seq = pd.read_csv(BASE / "resultados_seq.csv")
 res_omp = pd.read_csv(BASE / "resultados_omp.csv")
 
-# ══════════════════════════════════════════════════════════════════
+
 #  FIGURA 1 — Speedup vs hilos
-# ══════════════════════════════════════════════════════════════════
+#  Muestra que tan cerca estamos del speedup ideal S=p, y cómo varía con el número de hilos y el tamaño N. 
+
 fig, ax = plt.subplots(figsize=(7, 5))
 
 ax.plot([1,2,4,8], [1,2,4,8], "k--", lw=1.2, alpha=0.5, label="Speedup ideal (S=p)")
@@ -76,9 +78,11 @@ plt.savefig(BASE / "fig1_speedup.png")
 plt.close()
 print("✓ fig1_speedup.png")
 
-# ══════════════════════════════════════════════════════════════════
+
 #  FIGURA 2 — Eficiencia paralela (mapa de calor)
-# ══════════════════════════════════════════════════════════════════
+#  Muestra la eficiencia E(p) = S(p) / p para cada combinación de N y hilos, con anotaciones de los valores.
+# Verde para eficiencia alta (cercana a 1), rojo para eficiencia baja
+
 pivot = par.pivot(index="N", columns="hilos", values="eficiencia")
 pivot.index = [N_LABELS[n] for n in pivot.index]
 
@@ -92,6 +96,7 @@ ax.set_yticklabels(pivot.index)
 ax.set_title("Eficiencia  E(p) = S(p) / p")
 ax.grid(False)
 
+# anotamos el valor dentro de cada celda, con color blanco sobre celdas oscuras
 for i in range(pivot.shape[0]):
     for j in range(pivot.shape[1]):
         val = pivot.values[i, j]
@@ -106,9 +111,9 @@ plt.savefig(BASE / "fig2_eficiencia.png")
 plt.close()
 print("✓ fig2_eficiencia.png")
 
-# ══════════════════════════════════════════════════════════════════
+
 #  FIGURA 3 — Tiempo de ejecución con barras de error
-# ══════════════════════════════════════════════════════════════════
+
 fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), sharey=False)
 
 for ax, (N, grp) in zip(axes, par.groupby("N")):
@@ -137,9 +142,11 @@ plt.savefig(BASE / "fig3_tiempos.png")
 plt.close()
 print("✓ fig3_tiempos.png")
 
-# ══════════════════════════════════════════════════════════════════
-#  FIGURA 4 — Monte Carlo vs Black-Scholes
-# ══════════════════════════════════════════════════════════════════
+
+#  FIGURA 4 — Comparación Monte Carlo vs Black-Scholes
+#  Izquierda: precios estimados
+#  Derecha: Error relativo 
+
 fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
 
 ax = axes[0]
@@ -174,9 +181,9 @@ plt.savefig(BASE / "fig4_financiero.png")
 plt.close()
 print("✓ fig4_financiero.png")
 
-# ══════════════════════════════════════════════════════════════════
-#  FIGURA 5 — Dashboard resumen
-# ══════════════════════════════════════════════════════════════════
+
+#  FIGURA 5 — Dashboard resumen 
+
 fig = plt.figure(figsize=(14, 8))
 gs  = GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.38)
 

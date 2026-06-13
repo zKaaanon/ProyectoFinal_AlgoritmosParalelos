@@ -1,12 +1,9 @@
 /*
  * blackscholes.h
- * Fórmula cerrada de Black-Scholes para opciones europeas.
- * Se usa ÚNICAMENTE para verificar que Monte Carlo converge
- * al valor teórico correcto. No forma parte del algoritmo principal.
- *
+ * Implementación de la fórmula cerrada de Black-Scholes para opciones call europeas.
+ * Se usa para verificar que los resutados de Monte Carlo tengan sentido.
  * Proyecto: Monte Carlo con OpenMP — Fase 1 (Secuencial)
  * Materia:  Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
- * Entrega:  Viernes 12 de junio de 2026
  */
 
 #ifndef BLACKSCHOLES_H
@@ -15,7 +12,8 @@
 #include <math.h>
 
 /*
- * norm_cdf — distribución normal acumulada usando erfc de <math.h>.
+ * norm_cdf — distribución normal acumulada N(x) 
+ * usando erfc de <math.h>.
  * erfc(x) = 1 - erf(x), con erf de alta precisión (error < 1e-15).
  * Fórmula: N(x) = erfc(-x / sqrt(2)) / 2
  */
@@ -24,8 +22,9 @@ static double norm_cdf(double x) {
 }
 
 /*
- * bs_call_price — precio de una opción call europea (Black-Scholes).
+ * bs_call_price — precio teórico de una opción call europea (Black-Scholes).
  *
+ * parametros:
  *   S0    precio actual del subyacente
  *   K     precio de ejercicio (strike)
  *   T     tiempo al vencimiento (años)
