@@ -1,34 +1,20 @@
+```c
 /*
  * montecarlo_seq.c
- * Versión SECUENCIAL — Monte Carlo para valoración de opción call europea.
+ * Versión SECUENCIAL — Base para el proyecto de Monte Carlo.
+ * Materia: Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
+ * Entrega: Viernes 12 de junio de 2026
  *
- * ── Modelo financiero ──────────────────────────────────────────────────────
- * Movimiento Browniano Geométrico (GBM) bajo medida de riesgo neutral:
+ * Notas rápidas para el reporte de la Fase 1:
+ * - Usamos el Movimiento Browniano Geométrico (GBM) para simular los precios.
+ * - Generamos los aleatorios usando Box-Muller junto con xorshift32 para ir en friega.
+ * - Guardamos todos los precios finales en un arreglo porque los necesitamos ordenados para el VaR.
  *
- *   S(t + Δt) = S(t) · exp( (r − σ²/2)·Δt + σ·ε·√Δt )
+ * Cómo compilar en la terminal:
+ * gcc -O2 -std=c11 -Wall -Wextra -o montecarlo_seq montecarlo_seq.c -lm
  *
- *   donde ε ~ N(0,1)  (generado con método Box-Muller + xorshift32)
- *   y r es la tasa libre de riesgo (medida de riesgo neutral, NO el drift μ).
- *
- * Precio de la opción call europea al vencimiento T:
- *   C = e^(−rT) · E[ max(S_T − K, 0) ]
- *
- * ── Complejidad ────────────────────────────────────────────────────────────
- *   Temporal:  O(N · PASOS)    N = trayectorias, PASOS = pasos de tiempo
- *   Espacial:  O(N)            se almacenan precios finales para VaR
- *
- * ── Compilación ───────────────────────────────────────────────────────────
- *   gcc -O2 -std=c11 -Wall -Wextra -o montecarlo_seq montecarlo_seq.c -lm
- *
- * ── Uso ───────────────────────────────────────────────────────────────────
- *   ./montecarlo_seq [N] [seed]
- *   N    = número de simulaciones  (default: 1 000 000)
- *   seed = semilla del RNG          (default: 12345)
- *
- * ── Proyecto ──────────────────────────────────────────────────────────────
- *   Monte Carlo con OpenMP — Fase 1 (Secuencial)
- *   Algoritmos Paralelos — Prof. Mario Arturo Nieto Butrón
- *   Entrega: Viernes 12 de junio de 2026
+ * Cómo correrlo:
+ * ./montecarlo_seq [N_simulaciones] [semilla]
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -44,33 +30,22 @@
 
 #include "blackscholes.h"
 
-/* ══════════════════════════════════════════════════════════════════
- *  PARÁMETROS FINANCIEROS — fijos para todo el proyecto
- *  (sec. + paralelo + BD + Power BI). Cambiar aquí es suficiente.
- * ══════════════════════════════════════════════════════════════════ */
-#define S0      100.0   /* Precio inicial del activo                  */
-#define K       105.0   /* Strike (precio de ejercicio)               */
-#define T_ANN     1.0   /* Tiempo al vencimiento (años)               */
-#define R         0.05  /* Tasa libre de riesgo anual (risk-neutral)  */
-#define SIGMA     0.20  /* Volatilidad anual                          */
-#define PASOS     252   /* Pasos de tiempo (días hábiles / año)       */
+/* --- Parámetros financieros fijos (Modificar aquí cambia todo el proyecto) --- */
+#define S0      100.0   /* Precio inicial de la acción */
+#define K       105.0   /* Strike price (precio de ejercicio) */
+#define T_ANN     1.0   /* Tiempo de vencimiento (1 año) */
+#define R         0.05  /* Tasa libre de riesgo anual */
+#define SIGMA     0.20  /* Volatilidad anual de la acción */
+#define PASOS     252   /* Días hábiles del año (pasos del bucle temporal) */
 
-/* ══════════════════════════════════════════════════════════════════
- *  PARÁMETROS DE SIMULACIÓN POR DEFECTO
- * ══════════════════════════════════════════════════════════════════ */
+/* --- Valores por defecto por si corremos el programa sin pasar argumentos --- */
 #define N_DEFAULT    1000000L
 #define SEED_DEFAULT 12345u
 
 
-/* ──────────────────────────────────────────────────────────────────
- * xorshift32 — generador de números pseudoaleatorios de 32 bits.
- *
- * Algoritmo de G. Marsaglia (2003). Período 2^32 − 1.
- * Se usa uint32_t para garantizar aritmética correcta en cualquier
- * plataforma (evita desbordamiento silencioso de unsigned long en 64-bit).
- *
- * Complejidad: O(1) por llamada.
- * ────────────────────────────────────────────────────────────────── */
+/* Generador xorshift32: Nos da números aleatorios en tiempo O(1).
+ * Es el clásico de Marsaglia. Usamos uint32_t para que la aritmética 
+ * no haga cosas raras o desbordamientos raros en sistemas de 64 bits. */
 static uint32_t xorshift32(uint32_t *state) {
     uint32_t x = *state;
     x ^= x << 13;
@@ -81,21 +56,11 @@ static uint32_t xorshift32(uint32_t *state) {
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * box_muller — genera DOS muestras independientes N(0,1).
- *
- * Método de Box-Muller (1958):
- *   Z1 = √(−2 ln U1) · cos(2π U2)
- *   Z2 = √(−2 ln U1) · sin(2π U2)
- *   con U1, U2 ~ Uniforme(0,1) independientes.
- *
- * Genera pares para aprovechar ambas muestras en el loop principal.
- * Parámetros de salida: z1, z2 escritos por referencia.
- *
- * Complejidad: O(1)
- * ────────────────────────────────────────────────────────────────── */
+/* Box-Muller: Transforma la distribución uniforme en una normal N(0,1).
+ * El truco de sumarle 0.5 antes de dividir es para que nunca nos dé un 0 clavado 
+ * y el logaritmo de adentro no vaya a explotar por una indeterminación.
+ * Escupe dos números por referencia (z1 y z2) para aprovechar la llamada. */
 static void box_muller(uint32_t *seed, double *z1, double *z2) {
-    /* +0.5 antes de dividir garantiza U1, U2 ∈ (0, 1) — evita log(0) */
     double u1 = (xorshift32(seed) + 0.5) / 4294967296.0;
     double u2 = (xorshift32(seed) + 0.5) / 4294967296.0;
 
@@ -105,32 +70,12 @@ static void box_muller(uint32_t *seed, double *z1, double *z2) {
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * simular_precio_final — simula UNA trayectoria GBM.
- *
- * Evolución discreta bajo medida de riesgo neutral:
- *   S_{i+1} = S_i · exp( (r − σ²/2)·Δt + σ·ε_i·√Δt )
- *
- * Los términos constantes (drift, vol_sqrt) se calculan fuera del
- * loop para evitar operaciones repetidas.
- *
- * Box-Muller genera pares ε, así que el loop avanza de 2 en 2.
- *
- * Parámetros:
- *   s0   precio inicial
- *   r    tasa libre de riesgo (medida risk-neutral)
- *   sigma volatilidad
- *   dt   tamaño de paso temporal
- *   pasos número de pasos
- *   seed puntero a estado del RNG (modificado in-place)
- *
- * Retorna: precio final S_T
- * Complejidad: O(pasos)
- * ────────────────────────────────────────────────────────────────── */
+/* Función para aventar una trayectoria completa de la acción.
+ * Precalculamos el drift y la volatilidad AFUERA del while para ahorrar CPU.
+ * Como Box-Muller nos da pares de números normales, avanzamos el bucle de 2 en 2. */
 static double simular_precio_final(double s0,   double r,
                                     double sigma, double dt,
                                     int pasos,   uint32_t *seed) {
-    /* Precalcular términos del exponente — O(1), fuera del loop */
     double drift    = (r - 0.5 * sigma * sigma) * dt;
     double vol_sqrt = sigma * sqrt(dt);
 
@@ -138,14 +83,14 @@ static double simular_precio_final(double s0,   double r,
     double z1, z2;
     int i = 0;
 
-    /* Loop principal: avanza de 2 en 2 aprovechando el par Box-Muller */
+    /* Avanzamos doble paso por iteración */
     while (i < pasos - 1) {
         box_muller(seed, &z1, &z2);
-        S *= exp(drift + vol_sqrt * z1);   /* paso i     */
-        S *= exp(drift + vol_sqrt * z2);   /* paso i + 1 */
+        S *= exp(drift + vol_sqrt * z1);
+        S *= exp(drift + vol_sqrt * z2);
         i += 2;
     }
-    /* Paso final si PASOS es impar */
+    /* Si el número de pasos fuera impar, hacemos el último que falta suelto */
     if (i < pasos) {
         box_muller(seed, &z1, &z2);
         S *= exp(drift + vol_sqrt * z1);
@@ -155,9 +100,7 @@ static double simular_precio_final(double s0,   double r,
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * cmp_double — comparador para qsort (orden ascendente).
- * ────────────────────────────────────────────────────────────────── */
+/* Comparador clásico que nos pide la función qsort para ordenar de menor a mayor */
 static int cmp_double(const void *a, const void *b) {
     double da = *(const double *)a;
     double db = *(const double *)b;
@@ -165,30 +108,20 @@ static int cmp_double(const void *a, const void *b) {
 }
 
 
-/* ──────────────────────────────────────────────────────────────────
- * calcular_var — Value at Risk al nivel dado.
- *
- * Ordena los precios finales (O(n log n)) y toma el percentil
- * indicado. El VaR se expresa como pérdida respecto a S0.
- *
- * Modifica el arreglo 'precios' in-place (lo ordena).
- * Complejidad: O(n log n)
- * ────────────────────────────────────────────────────────────────── */
+/* Sacar el Value at Risk (VaR): Ordena el array de precios con qsort en O(n log n).
+ * Luego busca la posición del percentil y calcula la pérdida máxima restando S0. */
 static double calcular_var(double *precios, long n, double nivel) {
     qsort(precios, (size_t)n, sizeof(double), cmp_double);
     long idx = (long)(nivel * (double)n);
     if (idx < 0)   idx = 0;
     if (idx >= n)  idx = n - 1;
-    return S0 - precios[idx];   /* pérdida positiva = S0 > S_T */
+    return S0 - precios[idx];
 }
 
 
-/* ══════════════════════════════════════════════════════════════════
- *  PROGRAMA PRINCIPAL
- * ══════════════════════════════════════════════════════════════════ */
 int main(int argc, char *argv[]) {
 
-    /* ── Parámetros de línea de comandos ── */
+    /* Cachar los parámetros por consola, si no metemos nada agarra los de fábrica */
     long     N    = N_DEFAULT;
     uint32_t seed = SEED_DEFAULT;
 
@@ -204,15 +137,15 @@ int main(int argc, char *argv[]) {
     printf("   Monte Carlo Financiero — Versión SECUENCIAL\n");
     printf("═══════════════════════════════════════════════════════\n");
     printf("  Parámetros financieros:\n");
-    printf("    S0=%.1f  K=%.1f  T=%.1f año(s)  r=%.2f  σ=%.2f\n",
+    printf("     S0=%.1f  K=%.1f  T=%.1f año(s)  r=%.2f  σ=%.2f\n",
            S0, K, T_ANN, R, SIGMA);
-    printf("    Pasos por trayectoria: %d (días hábiles)\n", PASOS);
+    printf("     Pasos por trayectoria: %d (días hábiles)\n", PASOS);
     printf("  Parámetros de simulación:\n");
-    printf("    N    = %ld trayectorias\n", N);
-    printf("    Seed = %u\n", seed);
+    printf("     N    = %ld trayectorias\n", N);
+    printf("     Seed = %u\n", seed);
     printf("───────────────────────────────────────────────────────\n");
 
-    /* ── Reservar memoria para precios finales (VaR) ── */
+    /* Apartar memoria dinámica para guardar los precios finales */
     double *precios = (double *)malloc((size_t)N * sizeof(double));
     if (!precios) {
         fprintf(stderr, "Error: malloc falló para %ld doubles (%.1f MB).\n",
@@ -220,66 +153,59 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    /* ── Constante de tiempo ── */
     double dt = T_ANN / (double)PASOS;
 
-    /* ── Inicio de medición ── */
+    /* Cronómetro: Usamos clock_gettime con CLOCK_MONOTONIC porque clock() normal
+     * no sirve para comparar de forma justa contra la versión paralela de OpenMP. */
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* ════════════════════════════════════════════════════════════
-     *  LOOP PRINCIPAL DE MONTE CARLO ── O(N · PASOS)
-     *
-     *  Para cada trayectoria i = 0 … N−1:
-     *    1. Simular S_T con GBM discreto bajo medida risk-neutral
-     *    2. Calcular payoff: max(S_T − K, 0)
-     *    3. Acumular payoff para el promedio
-     *
-     *  Cada iteración es COMPLETAMENTE INDEPENDIENTE:
-     *  no hay dependencia de datos entre trayectorias.
-     *  → Candidato natural a paralelización con OpenMP (Fase 2).
-     *
-     *  La única "dependencia" es el estado del RNG (seed), que en
-     *  la Fase 2 se volverá privado por hilo.
-     * ════════════════════════════════════════════════════════════ */
     double suma_payoffs = 0.0;
 
+    /* ════════════════════════════════════════════════════════════
+     * LOOP PRINCIPAL — Aquí se va casi todo el tiempo de CPU
+     *
+     * Nota para la Fase 2: Como ninguna iteración depende de la otra,
+     * este for está regalado para meterle un #pragma omp parallel for.
+     * Solo habrá que cuidar la semilla haciendo que cada hilo tenga la suya.
+     * ════════════════════════════════════════════════════════════ */
     for (long i = 0; i < N; i++) {
         double ST = simular_precio_final(S0, R, SIGMA, dt, PASOS, &seed);
 
-        precios[i] = ST;                /* guardar para VaR */
+        precios[i] = ST;                /* Guardamos para poder calcular el VaR luego */
 
         double payoff = ST - K;
-        if (payoff < 0.0) payoff = 0.0; /* max(S_T − K, 0) */
+        if (payoff < 0.0) payoff = 0.0; /* Si no conviene ejercer la opción Call, vale cero */
 
         suma_payoffs += payoff;
     }
 
-    /* ── Fin de medición ── */
+    /* Detener el cronómetro y sacar la diferencia de tiempo */
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double tiempo_s = (t1.tv_sec  - t0.tv_sec) +
                       (t1.tv_nsec - t0.tv_nsec) * 1e-9;
 
-    /* ── Resultados ── */
-    double precio_mc = exp(-R * T_ANN) * (suma_payoffs / (double)N);
+    /* --- Cálculos finales y post-procesamiento de datos --- */
+    double precio_mc = exp(-R * T_ANN) * (suma_payoffs / (double)N); /* Traer a valor presente */
     double precio_bs = bs_call_price(S0, K, T_ANN, R, SIGMA);
     double error_rel = fabs(precio_mc - precio_bs) / precio_bs * 100.0;
     double var_5     = calcular_var(precios, N, 0.05);
 
-    /* Retorno esperado promedio (post-sort, recalcular media) */
+    /* Recalcular la media después del sort para sacar el retorno esperado */
     double suma_st = 0.0;
     for (long i = 0; i < N; i++) suma_st += precios[i];
     double ret_esp = (suma_st / N - S0) / S0 * 100.0;
 
+    /* Mostrar las métricas por pantalla */
     printf("\n  RESULTADOS:\n");
-    printf("    Precio call Monte Carlo  : $%8.4f\n", precio_mc);
-    printf("    Precio call Black-Scholes: $%8.4f\n", precio_bs);
-    printf("    Error relativo           : %8.4f%%\n", error_rel);
-    printf("    VaR 5%% (pérdida máx.)   : $%8.4f\n", var_5);
-    printf("    Retorno esperado promedio: %8.4f%%\n", ret_esp);
+    printf("     Precio call Monte Carlo  : $%8.4f\n", precio_mc);
+    printf("     Precio call Black-Scholes: $%8.4f\n", precio_bs);
+    printf("     Error relativo           : %8.4f%%\n", error_rel);
+    printf("     VaR 5%% (pérdida máx.)   : $%8.4f\n", var_5);
+    printf("     Retorno esperado promedio: %8.4f%%\n", ret_esp);
     printf("\n  DESEMPEÑO:\n");
-    printf("    Tiempo de ejecución : %.6f s\n", tiempo_s);
-    printf("    Trayectorias/segundo: %.0f\n", (double)N / tiempo_s);
+    printf("     Tiempo de ejecución : %.6f s\n", tiempo_s);
+    printf("     Trayectorias/segundo: %.0f\n", (double)N / tiempo_s);
     printf("───────────────────────────────────────────────────────\n");
 
     if (error_rel < 1.0)
@@ -288,7 +214,7 @@ int main(int argc, char *argv[]) {
         printf("  [WARN] Error relativo alto (%.2f%%) — considerar N mayor\n",
                error_rel);
 
-    /* ── Exportar CSV (Fase 4: Supabase) ── */
+    /* Guardar los datos en un CSV para mandarlos a Supabase en la Fase 4 */
     FILE *csv = fopen("resultados_seq.csv", "w");
     if (csv) {
         fprintf(csv,
@@ -307,6 +233,8 @@ int main(int argc, char *argv[]) {
 
     printf("═══════════════════════════════════════════════════════\n");
 
-    free(precios);
+    free(precios); /* Liberar la memoria asignada */
     return EXIT_SUCCESS;
 }
+
+```
